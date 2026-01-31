@@ -1,13 +1,12 @@
 import os
 import time
 import base64
+import json
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional
 
 app = FastAPI(title="Kalshi Trading Proxy")
 
@@ -45,8 +44,6 @@ if response.status_code >= 400:
 
 return response.json()*
 
-class OrderRequest(BaseModel): ticker: str side: str action: str count: int type: str = "market" yes_price: Optional[int] = None no_price: Optional[int] = None
-
 @app.get("/health") def health_check(): return {"status": "healthy", "api_key_configured": bool(API_KEY_ID)}
 
 @app.get("/balance") def get_balance(): return kalshi_request("GET", "/portfolio/balance")
@@ -59,13 +56,8 @@ class OrderRequest(BaseModel): ticker: str side: str action: str count: int type
 
 @app.get("/markets") def list_markets(limit: int = 100, status: str = "open"): return kalshi_request("GET", f"/markets?limit={limit}&status={status}")
 
-@app.get("/events/{event_ticker}") def get_event(event_ticker: str): return kalshi_request("GET", f"/events/{event_ticker}")
-
-@app.post("/order") def place_order(order: OrderRequest): body = { "ticker": order.ticker, "side": order.side, "action": order.action, "count": order.count, "type": order.type } if order.type == "limit": if order.yes_price: body["yes_price"] = order.yes_price if order.no_price: body["no_price"] = order.no_price
-
-return kalshi_request("POST", "/portfolio/orders", body)
+@app.post("/order") async def place_order(request: Request): body = await request.json() return kalshi_request("POST", "/portfolio/orders", body)
 
 @app.delete("/order/{order_id}") def cancel_order(order_id: str): return kalshi_request("DELETE", f"/portfolio/orders/{order_id}")
 
 @app.get("/fills") def get_fills(): return kalshi_request("GET", "/portfolio/fills")
-
