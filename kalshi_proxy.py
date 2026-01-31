@@ -12,7 +12,9 @@ app = FastAPI(title="Kalshi Trading Proxy")
 
 app.add_middleware( CORSMiddleware, allow_origins=[""], allow_credentials=True, allow_methods=[""], allow_headers=[""], )
 
-KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2" API_KEY_ID = os.environ.get("API_KEY_ID") PRIVATE_KEY_PEM = os.environ.get("PRIVATE_KEY")
+KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+API_KEY_ID = os.environ.get("API_KEY_ID")
+PRIVATE_KEY_PEM = os.environ.get("PRIVATE_KEY")
 
 def get_private_key(): if not PRIVATE_KEY_PEM: raise ValueError("PRIVATE_KEY environment variable not set") return serialization.load_pem_private_key( PRIVATE_KEY_PEM.encode(), password=None )
 
