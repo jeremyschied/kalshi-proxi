@@ -1,145 +1,142 @@
 import os
-import base64
 import time
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from flask import Flask, request, jsonify
+import base64
+from datetime import datetime
+from flask import Flask, request, jsonify, Response
 import requests
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from cryptography.hazmat.backends import default_backend
 
 app = Flask(__name__)
 
+# Configuration
 KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_API_KEY = os.environ.get("KALSHI_API_KEY", "")
+KALSHI_PRIVATE_KEY_PATH = os.environ.get("KALSHI_PRIVATE_KEY_PATH", "kalshi_private_key.pem")
 
-def get_credentials():
-    """Read credentials fresh each time - fixes Railway env var timing issue"""
-    api_key = os.environ.get("KALSHI_API_KEY", "")
-    private_key_b64 = os.environ.get("KALSHI_PRIVATE_KEY", "")
-    return api_key, private_key_b64
+# Load private key at startup
+_private_key = None
+
+def get_private_key():
+    """Load and cache the RSA private key."""
+    global _private_key
+    if _private_key is None:
+        try:
+            with open(KALSHI_PRIVATE_KEY_PATH, "rb") as key_file:
+                _private_key = load_pem_private_key(
+                    key_file.read(),
+                    password=None,
+                    backend=default_backend()
+                )
+            print(f"Successfully loaded private key from {KALSHI_PRIVATE_KEY_PATH}")
+        except FileNotFoundError:
+            print(f"ERROR: Private key file not found at {KALSHI_PRIVATE_KEY_PATH}")
+            raise
+        except Exception as e:
+            print(f"ERROR: Failed to load private key: {e}")
+            raise
+    return _private_key
+
 
 def sign_request(method: str, path: str, timestamp: str) -> str:
-    """Sign the request using Ed25519"""
-    _, private_key_b64 = get_credentials()
+    """
+    Sign a request using RSA-PSS with SHA256.
+    
+    Args:
+        method: HTTP method (GET, POST, etc.)
+        path: API path (e.g., /trade-api/v2/exchange/status)
+        timestamp: Unix timestamp in milliseconds as string
+    
+    Returns:
+        Base64-encoded signature
+    """
+    # Build the message to sign: timestamp + method + path
+    message = f"{timestamp}{method}{path}"
+    message_bytes = message.encode("utf-8")
+    
+    # Sign using RSA-PSS with SHA256
+    private_key = get_private_key()
+    signature = private_key.sign(
+        message_bytes,
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        hashes.SHA256()
+    )
+    
+    return base64.b64encode(signature).decode("utf-8")
 
-    if not private_key_b64:
-        raise ValueError("KALSHI_PRIVATE_KEY environment variable not set")
 
-    # Decode the base64-encoded private key
-    private_key_pem = base64.b64decode(private_key_b64)
-    private_key = load_pem_private_key(private_key_pem, password=None)
-
-    if not isinstance(private_key, Ed25519PrivateKey):
-        raise ValueError("Private key must be Ed25519")
-
-    # Create the message to sign: timestamp + method + path
-    message = f"{timestamp}{method}{path}".encode()
-    signature = private_key.sign(message)
-
-    return base64.b64encode(signature).decode()
-
-def make_kalshi_request(method: str, endpoint: str, params: dict = None, data: dict = None):
-    """Make an authenticated request to Kalshi API"""
-    api_key, _ = get_credentials()
-
-    if not api_key:
-        raise ValueError("KALSHI_API_KEY environment variable not set")
-
-    url = f"{KALSHI_API_BASE}{endpoint}"
+def get_auth_headers(method: str, path: str) -> dict:
+    """Generate authentication headers for a Kalshi API request."""
     timestamp = str(int(time.time() * 1000))
-
-    # Sign the request
-    signature = sign_request(method, endpoint, timestamp)
-
-    headers = {
-        "KALSHI-ACCESS-KEY": api_key,
+    signature = sign_request(method, path, timestamp)
+    
+    return {
+        "KALSHI-ACCESS-KEY": KALSHI_API_KEY,
         "KALSHI-ACCESS-SIGNATURE": signature,
         "KALSHI-ACCESS-TIMESTAMP": timestamp,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Accept": "application/json"
     }
 
-    response = requests.request(
-        method=method,
-        url=url,
-        headers=headers,
-        params=params,
-        json=data
-    )
-
-    return response
 
 @app.route("/health", methods=["GET"])
-def health():
-    """Health check endpoint"""
-    api_key, private_key_b64 = get_credentials()
+def health_check():
+    """Health check endpoint."""
     return jsonify({
         "status": "healthy",
-        "has_api_key": bool(api_key),
-        "has_private_key": bool(private_key_b64)
+        "timestamp": datetime.utcnow().isoformat(),
+        "api_key_configured": bool(KALSHI_API_KEY)
     })
 
-@app.route("/balance", methods=["GET"])
-def get_balance():
-    """Get account balance"""
+
+@app.route("/<path:path>", methods=["GET", "POST", "PUT", "DELETE"])
+def proxy(path):
+    """Proxy requests to Kalshi API with authentication."""
+    # Build the full API path
+    api_path = f"/trade-api/v2/{path}"
+    full_url = f"{KALSHI_API_BASE.rstrip('/trade-api/v2')}{api_path}"
+    
+    # Get authentication headers
+    headers = get_auth_headers(request.method, api_path)
+    
+    # Forward the request
     try:
-        response = make_kalshi_request("GET", "/portfolio/balance")
-        return jsonify(response.json()), response.status_code
-    except Exception as e:
+        response = requests.request(
+            method=request.method,
+            url=full_url,
+            headers=headers,
+            json=request.get_json(silent=True) if request.data else None,
+            params=request.args.to_dict() if request.args else None,
+            timeout=30
+        )
+        
+        # Return the response
+        return Response(
+            response.content,
+            status=response.status_code,
+            content_type=response.headers.get("Content-Type", "application/json")
+        )
+    except requests.RequestException as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route("/positions", methods=["GET"])
-def get_positions():
-    """Get current positions"""
-    try:
-        response = make_kalshi_request("GET", "/portfolio/positions")
-        return jsonify(response.json()), response.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/markets/<ticker>", methods=["GET"])
-def get_market(ticker: str):
-    """Get market details"""
-    try:
-        response = make_kalshi_request("GET", f"/markets/{ticker}")
-        return jsonify(response.json()), response.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/markets/<ticker>/orderbook", methods=["GET"])
-def get_orderbook(ticker: str):
-    """Get market orderbook"""
-    try:
-        response = make_kalshi_request("GET", f"/markets/{ticker}/orderbook")
-        return jsonify(response.json()), response.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/orders", methods=["POST"])
-def create_order():
-    """Create a new order"""
-    try:
-        data = request.get_json()
-        response = make_kalshi_request("POST", "/portfolio/orders", data=data)
-        return jsonify(response.json()), response.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/orders/<order_id>", methods=["DELETE"])
-def cancel_order(order_id: str):
-    """Cancel an order"""
-    try:
-        response = make_kalshi_request("DELETE", f"/portfolio/orders/{order_id}")
-        return jsonify(response.json()), response.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/orders", methods=["GET"])
-def get_orders():
-    """Get all orders"""
-    try:
-        response = make_kalshi_request("GET", "/portfolio/orders")
-        return jsonify(response.json()), response.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    # Validate configuration
+    if not KALSHI_API_KEY:
+        print("WARNING: KALSHI_API_KEY environment variable not set")
+    
+    # Test loading the private key
+    try:
+        get_private_key()
+    except Exception as e:
+        print(f"WARNING: Could not load private key: {e}")
+    
+    # Run the server
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Starting Kalshi proxy server on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
