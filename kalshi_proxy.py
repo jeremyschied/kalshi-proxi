@@ -32,11 +32,12 @@ KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 
 def load_private_key():
     """Load the RSA private key from environment variable."""
-    if not KALSHI_PRIVATE_KEY:
+    key = os.environ.get("KALSHI_PRIVATE_KEY", "")
+    if not key:
         raise ValueError("KALSHI_PRIVATE_KEY environment variable not set")
     
     # Handle escaped newlines in environment variable
-    key_data = KALSHI_PRIVATE_KEY.replace("\\n", "\n")
+    key_data = key.replace("\\n", "\n")
     
     private_key = serialization.load_pem_private_key(
         key_data.encode(),
