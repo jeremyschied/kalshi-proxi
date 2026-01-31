@@ -14,7 +14,7 @@ app = Flask(__name__)
 # Configuration
 KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_API_KEY = os.environ.get("KALSHI_API_KEY", "")
-KALSHI_PRIVATE_KEY_PATH = os.environ.get("KALSHI_PRIVATE_KEY_PATH", "kalshi_private_key.pem")
+KALSHI_PRIVATE_KEY_B64 = os.environ.get("KALSHI_PRIVATE_KEY", "")
 
 # Load private key at startup
 _private_key = None
