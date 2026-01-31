@@ -137,7 +137,7 @@ def get_orders():
     try:
         response = make_kalshi_request("GET", "/portfolio/orders")
         return jsonify(response.json()), response.status_code
-        except Exception as e:
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
