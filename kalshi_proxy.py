@@ -138,16 +138,6 @@ def get_orders():
         response = make_kalshi_request("GET", "/portfolio/orders")
         return jsonify(response.json()), response.status_code
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+        return 
+jsonify({"error": str(e)}), 
+500
