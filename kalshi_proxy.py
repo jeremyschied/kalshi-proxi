@@ -20,20 +20,19 @@ KALSHI_PRIVATE_KEY_B64 = os.environ.get("KALSHI_PRIVATE_KEY", "")
 _private_key = None
 
 def get_private_key():
-    """Load and cache the RSA private key."""
+    """Load and cache the RSA private key from environment variable."""
     global _private_key
     if _private_key is None:
+        if not KALSHI_PRIVATE_KEY_B64:
+            raise ValueError("KALSHI_PRIVATE_KEY environment variable not set")
         try:
-            with open(KALSHI_PRIVATE_KEY_PATH, "rb") as key_file:
-                _private_key = load_pem_private_key(
-                    key_file.read(),
-                    password=None,
-                    backend=default_backend()
-                )
-            print(f"Successfully loaded private key from {KALSHI_PRIVATE_KEY_PATH}")
-        except FileNotFoundError:
-            print(f"ERROR: Private key file not found at {KALSHI_PRIVATE_KEY_PATH}")
-            raise
+            private_key_pem = base64.b64decode(KALSHI_PRIVATE_KEY_B64)
+            _private_key = load_pem_private_key(
+                private_key_pem,
+                password=None,
+                backend=default_backend()
+            )
+            print("Successfully loaded private key from environment variable")
         except Exception as e:
             print(f"ERROR: Failed to load private key: {e}")
             raise
@@ -131,10 +130,13 @@ if __name__ == "__main__":
         print("WARNING: KALSHI_API_KEY environment variable not set")
     
     # Test loading the private key
-    try:
-        get_private_key()
-    except Exception as e:
-        print(f"WARNING: Could not load private key: {e}")
+    if not KALSHI_PRIVATE_KEY_B64:
+        print("WARNING: KALSHI_PRIVATE_KEY environment variable not set")
+    else:
+        try:
+            get_private_key()
+        except Exception as e:
+            print(f"WARNING: Could not load private key: {e}")
     
     # Run the server
     port = int(os.environ.get("PORT", 5000))
