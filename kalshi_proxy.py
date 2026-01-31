@@ -1,165 +1,148 @@
+import os
+import base64
+import time
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from flask import Flask, request, jsonify
 import requests
-import os
-from datetime import datetime
 
 app = Flask(__name__)
 
-# Kalshi API base URL
 KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
 
-def get_kalshi_credentials():
-    """Get Kalshi credentials fresh from environment variables each time."""
-    email = os.environ.get("KALSHI_EMAIL")
-    password = os.environ.get("KALSHI_PASSWORD")
-    return email, password
+def get_credentials():
+    """Read credentials fresh each time - fixes Railway env var timing issue"""
+    api_key = os.environ.get("KALSHI_API_KEY", "")
+    private_key_b64 = os.environ.get("KALSHI_PRIVATE_KEY", "")
+    return api_key, private_key_b64
 
-def get_kalshi_token():
-    """Get a fresh Kalshi API token using credentials from environment."""
-    email, password = get_kalshi_credentials()
+def sign_request(method: str, path: str, timestamp: str) -> str:
+    """Sign the request using Ed25519"""
+    _, private_key_b64 = get_credentials()
 
-    if not email or not password:
-        raise ValueError(f"Missing Kalshi credentials. KALSHI_EMAIL set: {bool(email)}, KALSHI_PASSWORD set: {bool(password)}")
+    if not private_key_b64:
+        raise ValueError("KALSHI_PRIVATE_KEY environment variable not set")
 
-    response = requests.post(
-        f"{KALSHI_API_BASE}/login",
-        json={"email": email, "password": password}
+    # Decode the base64-encoded private key
+    private_key_pem = base64.b64decode(private_key_b64)
+    private_key = load_pem_private_key(private_key_pem, password=None)
+
+    if not isinstance(private_key, Ed25519PrivateKey):
+        raise ValueError("Private key must be Ed25519")
+
+    # Create the message to sign: timestamp + method + path
+    message = f"{timestamp}{method}{path}".encode()
+    signature = private_key.sign(message)
+
+    return base64.b64encode(signature).decode()
+
+def make_kalshi_request(method: str, endpoint: str, params: dict = None, data: dict = None):
+    """Make an authenticated request to Kalshi API"""
+    api_key, _ = get_credentials()
+
+    if not api_key:
+        raise ValueError("KALSHI_API_KEY environment variable not set")
+
+    url = f"{KALSHI_API_BASE}{endpoint}"
+    timestamp = str(int(time.time() * 1000))
+
+    # Sign the request
+    signature = sign_request(method, endpoint, timestamp)
+
+    headers = {
+        "KALSHI-ACCESS-KEY": api_key,
+        "KALSHI-ACCESS-SIGNATURE": signature,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "Content-Type": "application/json"
+    }
+
+    response = requests.request(
+        method=method,
+        url=url,
+        headers=headers,
+        params=params,
+        json=data
     )
 
-    if response.status_code != 200:
-        raise ValueError(f"Kalshi login failed: {response.status_code} - {response.text}")
-
-    data = response.json()
-    return data.get("token")
+    return response
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Health check endpoint."""
-    email, password = get_kalshi_credentials()
+    """Health check endpoint"""
+    api_key, private_key_b64 = get_credentials()
     return jsonify({
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
-        "credentials_configured": bool(email and password)
+        "has_api_key": bool(api_key),
+        "has_private_key": bool(private_key_b64)
     })
 
 @app.route("/balance", methods=["GET"])
 def get_balance():
-    """Get Kalshi account balance."""
+    """Get account balance"""
     try:
-        token = get_kalshi_token()
-
-        response = requests.get(
-            f"{KALSHI_API_BASE}/portfolio/balance",
-            headers={"Authorization": f"Bearer {token}"}
-        )
-
-        if response.status_code != 200:
-            return jsonify({"error": f"Failed to get balance: {response.text}"}), response.status_code
-
-        return jsonify(response.json())
-
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/markets", methods=["GET"])
-def get_markets():
-    """Get available markets."""
-    try:
-        token = get_kalshi_token()
-
-        # Get query parameters
-        limit = request.args.get("limit", 20)
-        cursor = request.args.get("cursor")
-        status = request.args.get("status", "open")
-
-        params = {"limit": limit, "status": status}
-        if cursor:
-            params["cursor"] = cursor
-
-        response = requests.get(
-            f"{KALSHI_API_BASE}/markets",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params
-        )
-
-        if response.status_code != 200:
-            return jsonify({"error": f"Failed to get markets: {response.text}"}), response.status_code
-
-        return jsonify(response.json())
-
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/market/<ticker>", methods=["GET"])
-def get_market(ticker):
-    """Get specific market details."""
-    try:
-        token = get_kalshi_token()
-
-        response = requests.get(
-            f"{KALSHI_API_BASE}/markets/{ticker}",
-            headers={"Authorization": f"Bearer {token}"}
-        )
-
-        if response.status_code != 200:
-            return jsonify({"error": f"Failed to get market: {response.text}"}), response.status_code
-
-        return jsonify(response.json())
-
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/orders", methods=["POST"])
-def create_order():
-    """Create a new order."""
-    try:
-        token = get_kalshi_token()
-
-        order_data = request.json
-        if not order_data:
-            return jsonify({"error": "Order data required"}), 400
-
-        response = requests.post(
-            f"{KALSHI_API_BASE}/portfolio/orders",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            },
-            json=order_data
-        )
-
-        if response.status_code not in [200, 201]:
-            return jsonify({"error": f"Failed to create order: {response.text}"}), response.status_code
-
-        return jsonify(response.json())
-
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 401
+        response = make_kalshi_request("GET", "/portfolio/balance")
+        return jsonify(response.json()), response.status_code
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/positions", methods=["GET"])
 def get_positions():
-    """Get current positions."""
+    """Get current positions"""
     try:
-        token = get_kalshi_token()
+        response = make_kalshi_request("GET", "/portfolio/positions")
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-        response = requests.get(
-            f"{KALSHI_API_BASE}/portfolio/positions",
-            headers={"Authorization": f"Bearer {token}"}
-        )
+@app.route("/markets/<ticker>", methods=["GET"])
+def get_market(ticker: str):
+    """Get market details"""
+    try:
+        response = make_kalshi_request("GET", f"/markets/{ticker}")
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-        if response.status_code != 200:
-            return jsonify({"error": f"Failed to get positions: {response.text}"}), response.status_code
+@app.route("/markets/<ticker>/orderbook", methods=["GET"])
+def get_orderbook(ticker: str):
+    """Get market orderbook"""
+    try:
+        response = make_kalshi_request("GET", f"/markets/{ticker}/orderbook")
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-        return jsonify(response.json())
+@app.route("/orders", methods=["POST"])
+def create_order():
+    """Create a new order"""
+    try:
+        data = request.get_json()
+        response = make_kalshi_request("POST", "/portfolio/orders", data=data)
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
+@app.route("/orders/<order_id>", methods=["DELETE"])
+def cancel_order(order_id: str):
+    """Cancel an order"""
+    try:
+        response = make_kalshi_request("DELETE", f"/portfolio/orders/{order_id}")
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/orders", methods=["GET"])
+def get_orders():
+    """Get all orders"""
+    try:
+        response = make_kalshi_request("GET", "/portfolio/orders")
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
     except ValueError as e:
         return jsonify({"error": str(e)}), 401
     except Exception as e:
