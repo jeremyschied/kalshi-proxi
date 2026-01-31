@@ -27,6 +27,9 @@ def get_private_key():
             raise ValueError("KALSHI_PRIVATE_KEY environment variable not set")
         try:
             private_key_pem = base64.b64decode(KALSHI_PRIVATE_KEY_B64)
+            # Debug: print first 50 chars to verify PEM format
+            print(f"DEBUG: Decoded key starts with: {private_key_pem[:50]}")
+            print(f"DEBUG: Decoded key length: {len(private_key_pem)} bytes")
             _private_key = load_pem_private_key(
                 private_key_pem,
                 password=None,
